@@ -1,4 +1,5 @@
 ﻿using UnityEngine;
+using System.Collections;
 
 namespace ShootAR.Enemies
 {
@@ -8,11 +9,11 @@ namespace ShootAR.Enemies
 	[RequireComponent(typeof(AudioSource))]
 	public abstract class Enemy : Spawnable
 	{
-		[SerializeField] private int pointsValue;
+		[SerializeField] private ulong pointsValue;
 		/// <summary>
 		/// The amount of points added to the player's score when destroyed.
 		/// </summary>
-		public int PointsValue {
+		public ulong PointsValue {
 			get { return pointsValue; }
 			protected set { pointsValue = value; }
 		}
@@ -25,23 +26,26 @@ namespace ShootAR.Enemies
 		/// <summary>
 		/// Count of currently active enemies.
 		/// </summary>
+
+		/// <summary>
+		/// Dictates if this enemy can or not move due to gameplay status-effects.
+		/// </summary>
+		public bool CanMove { get; set; } = true;
+
+		public bool IsMoving { get; protected set; } = false;
+
+		/// <summary>Is attacking and moving AI enabled?</summary>
+		/// <remarks>Mostly useful in testing.</remarks>
+		public bool AiEnabled { get; set; } = true;
+
 		public static int ActiveCount { get; protected set; }
 
 		[SerializeField] protected AudioClip attackSfx;
 		[SerializeField] protected GameObject explosion;
 		protected AudioSource sfx;
 		[SerializeField] protected static ScoreManager score;
-		/**<summary>
-		 * When true, cancel special effects on death.
-		 * </summary>
-		 * <remarks>
-		 * A use case is to avoid error because explosions are created on quiting.
-		 * </remarks> */
-		private bool noDeathSfx;
 
-		protected void Awake() {
-			ActiveCount++;
-
+		protected virtual void Awake() {
 			if (score == null) score = FindObjectOfType<ScoreManager>();
 		}
 
@@ -57,26 +61,60 @@ namespace ShootAR.Enemies
 			sfx.maxDistance = 10f;
 		}
 
-		protected virtual void OnApplicationQuit() {
-			noDeathSfx = true;
+		protected virtual void OnEnable() {
+			ActiveCount++;
 		}
 
-		protected virtual void OnDestroy() {
-			if (gameState != null && !gameState.GameOver) {
-				score?.AddScore(PointsValue);
-				if (explosion != null && !noDeathSfx)
-					Instantiate(explosion, transform.position, transform.rotation);
-			}
+		public override void Destroy() {
+			score?.AddScore(PointsValue);
+			if (explosion != null)
+				Instantiate(explosion, transform.position, transform.rotation);
+		}
+
+		protected virtual void OnDisable() {
 			ActiveCount--;
 		}
 
+		private Coroutine lastMoveAction;
+
 		/// <summary>
-		/// Enemy moves towards a point using the physics engine.
+		/// Move to a point.
 		/// </summary>
 		public void MoveTo(Vector3 point) {
-			transform.LookAt(point);
-			transform.forward = -transform.position;
-			GetComponent<Rigidbody>().velocity = transform.forward * Speed;
+			if (!CanMove) return;
+			if (IsMoving) StopMoving();
+
+			IEnumerator LerpTo() {
+				Vector3 start = transform.position;
+				float startTime = Time.time;
+				float distance = Vector3.Distance(start, point);
+				float moveRatio;
+
+				do {
+					if (distance == 0f) break;
+
+					moveRatio = (Time.time - startTime) * Speed / distance;
+					if (moveRatio == 0f) {
+						yield return new WaitForEndOfFrame();
+						continue;
+					}
+
+					transform.position = Vector3.Slerp(start, point, moveRatio);
+					yield return new WaitForEndOfFrame();
+				} while (CanMove && Speed > 0 && transform.position != point);
+
+				IsMoving = false;
+			};
+
+			IsMoving = true;
+			lastMoveAction = StartCoroutine(LerpTo());
+		}
+
+		public void StopMoving() {
+			if (lastMoveAction == null) return;
+
+			StopCoroutine(lastMoveAction);
+			IsMoving = false;
 		}
 
 		/// <summary>
@@ -87,6 +125,16 @@ namespace ShootAR.Enemies
 			transform.LookAt(orbit.direction, orbit.perpendicularAxis);
 			transform.RotateAround(
 				orbit.direction, orbit.perpendicularAxis, Speed * Time.deltaTime);
+		}
+
+		/// <summary>
+		/// Command enemy to attack.
+		/// </summary>
+		public abstract void Attack();
+
+		public override void ResetState() {
+			StopMoving();
+			CanMove = true;
 		}
 	}
 }

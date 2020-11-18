@@ -1,14 +1,22 @@
 ﻿using UnityEngine;
+using UnityEngine.UI;
+using System.Collections;
 
 namespace ShootAR
 {
-	[RequireComponent(typeof(AudioSource))]
+	[RequireComponent(typeof(AudioSource), typeof(CapsuleCollider))]
 	public class Player : MonoBehaviour
 	{
-		//Set here how much health the player is allowed to have.
+		/// <summary>Maximum allowed health for player</summary>
 		public const sbyte MAXIMUM_HEALTH = 6;
 		private const float SHOT_COOLDOWN = 0.50f;
 		private const float DAMAGE_COOLDOWN = 1f;
+
+		/// <summary>
+		/// For how many seconds the amount of restored
+		/// bullets will float above the counter.
+		/// </summary>
+		private const float BULLET_PLUS_FLOAT_TIME = 3f;
 
 		[SerializeField]
 		private GameObject[] healthIndicator = new GameObject[MAXIMUM_HEALTH];
@@ -17,18 +25,17 @@ namespace ShootAR
 		private int health;
 		[Range(0, 999), SerializeField]
 		private int ammo;
+
 		private float nextFire;
 		private float nextDamage;
 
 		[SerializeField] private GameState gameState;
-		/// <summary>
-		/// The <see cref="Bullet"/> prefab that gets instantiated when the player shoots.
-		/// </summary>
-		/// <seealso cref="Shoot"/>
-		[SerializeField] private Bullet bullet;
 		private AudioSource audioSource;
+#pragma warning disable CS0649
 		[SerializeField] private AudioClip shotSfx;
-		[SerializeField] private UnityEngine.UI.Text bulletCount;
+		[SerializeField] private Text bulletCount;
+		[SerializeField] private Text bulletPlus;
+#pragma warning restore CS0649
 
 		/// <summary>
 		/// Player's health.
@@ -48,48 +55,66 @@ namespace ShootAR
 		private void UpdateHealthUI() {
 			if (healthIndicator[0] == null) return;
 
-			for (int i = 0;i < MAXIMUM_HEALTH;i++) {
+			for (int i = 0; i < MAXIMUM_HEALTH; i++) {
 				healthIndicator[i].SetActive(i < health);
 			}
 		}
 
 		/// <summary>
 		/// The ammount of bullets the player has.
+		/// Setting this also sets the bullet count on the UI.
 		/// </summary>
-		/// <remarks>
-		/// Setting this, also sets the bullet count on the UI.
-		/// </remarks>
 		public int Ammo {
 			get { return ammo; }
 			set {
+				// pop up a number showing player how many bullets they got
+				if (bulletPlus != null && value - ammo > 0) {
+					bulletPlus.text = $"+{value - ammo}";
+
+					IEnumerator FadeBulletPlus() {
+						bulletPlus.gameObject.SetActive(true);
+						bulletPlus.CrossFadeAlpha(1f, 0f, true);
+
+						yield return new WaitForSecondsRealtime(BULLET_PLUS_FLOAT_TIME);
+
+						do {
+							bulletPlus.CrossFadeAlpha(0f, 5f, true);
+							yield return new WaitForFixedUpdate();
+						} while (bulletPlus.color.a != 0f);
+
+						bulletPlus.gameObject.SetActive(false);
+					}
+					StartCoroutine(FadeBulletPlus());
+				}
+
 				ammo = value;
 				if (bulletCount != null)
 					bulletCount.text = ammo.ToString();
 			}
 		}
 
-		public bool HasArmor { get; set; }
-		public bool CanShoot { get; set; }
+		public bool HasArmor { get; set; } = false;
+		public bool CanShoot { get; set; } = true;
 
 		public static Player Create(
 			int health = MAXIMUM_HEALTH, Camera camera = null,
-			Bullet bullet = null, int ammo = 0, GameState gameState = null) {
+			int ammo = 0, GameState gameState = null) {
 			var o = new GameObject(nameof(Player)).AddComponent<Player>();
 
 			var healthUI = new GameObject("HealthUI").transform;
-			for (int i = 0;i < MAXIMUM_HEALTH;i++) {
+			for (int i = 0; i < MAXIMUM_HEALTH; i++) {
 				o.healthIndicator[i] = new GameObject("HealthIndicator");
 				o.healthIndicator[i].transform.parent = healthUI;
 			}
 			o.Health = health;
 			o.Ammo = ammo;
-			o.bullet = bullet;
 			o.gameState = gameState;
 			if (camera != null) camera.tag = "MainCamera";
-			else if (bullet != null) {
-				Debug.LogWarning("No reference to main camera. Shooting" +
-					" functions will raise error if used.");
-			}
+
+			CapsuleCollider collider = o.GetComponent<CapsuleCollider>();
+			collider.radius = 0.5f;
+			collider.height = 1.9f;
+			collider.isTrigger = true;
 
 			return o;
 		}
@@ -103,10 +128,16 @@ namespace ShootAR
 		/// </returns>
 		public Bullet Shoot() {
 			if (CanShoot && Ammo > 0 && Time.time >= nextFire) {
+				Bullet bullet = Spawnable.Pool<Bullet>.Instance.RequestObject();
+				if (bullet is null) return null;
+
 				Ammo--;
 				nextFire = Time.time + SHOT_COOLDOWN;
 				if (shotSfx != null) audioSource.PlayOneShot(shotSfx);
-				return Instantiate(bullet, Vector3.zero, Camera.main.transform.rotation);
+				bullet.transform.position = Vector3.zero;
+				bullet.transform.rotation = Camera.main.transform.rotation;
+				bullet.gameObject.SetActive(true);
+				return bullet;
 			}
 
 			return null;
@@ -116,7 +147,6 @@ namespace ShootAR
 			audioSource = GetComponent<AudioSource>();
 			if (bulletCount != null)
 				bulletCount.text = Ammo.ToString();
-			CanShoot = true;
 			UpdateHealthUI();
 		}
 

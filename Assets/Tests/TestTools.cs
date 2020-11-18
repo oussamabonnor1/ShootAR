@@ -1,5 +1,7 @@
 ﻿using ShootAR.Enemies;
 using UnityEngine;
+using NUnit.Framework;
+using System.IO;
 
 namespace ShootAR.TestTools
 {
@@ -7,31 +9,47 @@ namespace ShootAR.TestTools
 	/// Test class for replacing enemy classes in tests.
 	/// </summary>
 	[RequireComponent(typeof(SphereCollider), typeof(Rigidbody))]
-	internal class TestEnemy : Enemy
+	internal class TestEnemy : Crasher
 	{
+		public bool GotHit { get; private set; }
+
+		protected override void OnTriggerEnter(Collider other) {
+			base.OnTriggerEnter(other);
+			if (other.GetComponent<Bullet>() != null)
+				GotHit = true;
+		}
+
 		public static TestEnemy Create(
-			float speed = default(float),
-			int damage = default(int),
-			int pointsValue = default(int),
-			float x = 0, float y = 0, float z = 0,
-			GameState gameState = null) {
+				float speed = default(float),
+				int damage = default(int),
+				ulong pointsValue = default(int),
+				float x = 0, float y = 0, float z = 0) {
 			var o = new GameObject(nameof(TestEnemy)).AddComponent<TestEnemy>();
 			o.Speed = speed;
 			o.Damage = damage;
 			o.PointsValue = pointsValue;
 			o.transform.position = new Vector3(x, y, z);
-			o.gameState = gameState;
+			o.gameObject.SetActive(false);
 			return o;
 		}
 
-		protected override void Start() {
+		protected new void Start() {
 			GetComponent<SphereCollider>().isTrigger = true;
 			GetComponent<Rigidbody>().useGravity = false;
 		}
 
-		protected override void OnDestroy() { ActiveCount--; }
+		public new void ResetState() {
+			StopMoving();
+			CanMove = true;
+		}
+
+		public new void Destroy() {
+			ReturnToPool<TestEnemy>();
+			ActiveCount--;
+		}
 	}
 
+	//FIXME: Inherit from EnemyBullet.
 	/// <summary>
 	/// Bullet to test hitting player
 	/// </summary>
@@ -65,28 +83,139 @@ namespace ShootAR.TestTools
 		}
 	}
 
-	internal class TestShooter : Pyoopyoo { private new void OnDestroy() { ActiveCount--; } }
-	internal class TestMeleer : Boopboop { private new void OnDestroy() { ActiveCount--; } }
+	internal class OrbitTester : TestEnemy
+	{
+		public Orbit Orbit { get; set; }
+
+		public static OrbitTester Create(
+				Orbit orbit,
+				float speed = default,
+				int damage = default,
+				ulong pointsValue = default) {
+			var o = new GameObject(nameof(OrbitTester)).AddComponent<OrbitTester>();
+
+			o.Orbit = orbit;
+			o.Speed = speed;
+			o.Damage = damage;
+			o.PointsValue = pointsValue;
+			o.transform.position = orbit.direction + orbit.centerPoint;
+			o.gameObject.SetActive(false);
+			return o;
+		}
+
+		private void Update() {
+			OrbitAround(Orbit);
+			Debug.DrawRay(Orbit.centerPoint, Orbit.perpendicularAxis, Color.blue);
+			Debug.DrawLine(Orbit.direction, Orbit.centerPoint);
+			Debug.DrawLine(transform.position, Orbit.direction);
+			Debug.DrawLine(transform.position, Orbit.perpendicularAxis, Color.magenta);
+		}
+
+		public new void Destroy() {
+			ReturnToPool<OrbitTester>();
+			ActiveCount--;
+		}
+	}
+
 
 	/// <summary>
-	/// Target for testing purposes.
+	/// Bare bones <see cref="Spawnable"/> object for test purposes.
 	/// </summary>
-	internal class TestTarget : Enemy
+	internal class TestObject : Spawnable
 	{
-		public bool GotHit { get; private set; }
-
-		public void OnTriggerEnter(Collider other) {
-			if (other.GetComponent<Bullet>() != null)
-				GotHit = true;
-		}
-
-		private new void Start() {
-			gameObject.AddComponent<SphereCollider>();
-		}
-
-		public static TestTarget Create() {
-			var o = new GameObject("TestTarget").AddComponent<TestTarget>();
+		public static TestObject Create(
+			float speed = default,
+			float x = 0, float y = 0, float z = 0,
+			GameState gameState = null) {
+			var o = new GameObject(nameof(TestObject)).AddComponent<TestObject>();
+			o.Speed = speed;
+			o.transform.position = new Vector3(x, y, z);
 			return o;
+		}
+
+		public override void Destroy() {
+			throw new System.NotImplementedException();
+		}
+
+		public override void ResetState() {
+			throw new System.NotImplementedException();
+		}
+	}
+
+	public class TestBase
+	{
+		[TearDown]
+		public void ClearTestEnvironment() {
+			GameObject[] objects = Object.FindObjectsOfType<GameObject>();
+
+			foreach (GameObject o in objects) {
+				Object.Destroy(o.gameObject);
+			}
+
+			Spawnable.Pool<BulletCapsule>.Instance.Empty();
+			Spawnable.Pool<ArmorCapsule>.Instance.Empty();
+			Spawnable.Pool<HealthCapsule>.Instance.Empty();
+			Spawnable.Pool<PowerUpCapsule>.Instance.Empty();
+			Spawnable.Pool<Bullet>.Instance.Empty();
+			Spawnable.Pool<EnemyBullet>.Instance.Empty();
+			Spawnable.Pool<Crasher>.Instance.Empty();
+			Spawnable.Pool<Drone>.Instance.Empty();
+			Spawnable.Pool<TestEnemy>.Instance.Empty();
+		}
+	}
+
+	public class PatternsTestBase : TestBase
+	{
+		protected const string PATTERN_FILE = "patternstestfile.xml";
+
+		///<summary>pattern file's full path</summary>
+		protected string file;
+
+		protected FileInfo patternNames;
+		protected FileInfo patternNamesBackup;
+
+		[SetUp]
+		public void FileSetUp() {
+			file = Path.Combine(
+				Application.persistentDataPath,
+				Configuration.PATTERNS_DIR,
+				PATTERN_FILE
+			);
+
+			/* The file's name need to be included in a spesific file in order
+			 * to be able to be read later. */
+			patternNames = new FileInfo(Path.Combine(
+				Application.persistentDataPath, Configuration.PATTERN_NAMES));
+
+			// Back up that special file, if it already exists, to be restored later.
+			if (patternNames.Exists) {
+				patternNamesBackup = patternNames.CopyTo($"{patternNames.FullName}-{Random.value}~");
+
+				patternNames.Delete();
+			}
+
+			// Write file's name into the special file.
+			using (BinaryWriter writer = new BinaryWriter(patternNames.OpenWrite())) {
+				writer.Write(1); // one string in file
+				writer.Write(PATTERN_FILE.TrimEnd(".xml".ToCharArray()));
+			}
+		}
+
+		[TearDown]
+		public void DeletePatternFile() {
+			if (patternNamesBackup != null && patternNamesBackup.Exists) {
+				patternNamesBackup.CopyTo(patternNames.FullName, true);
+				patternNamesBackup.Delete();
+			}
+			else patternNames.Delete();
+
+			if (File.Exists(file))
+				File.Delete(file);
+
+			Assert.That(
+				!File.Exists(file),
+				"The file should be deleted when the test ends."
+			);
 		}
 	}
 }
